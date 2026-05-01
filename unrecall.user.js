@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.1.1
+// @version      1.2.0
 // @description  Captures DeepSeek replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
 // @run-at       document-start
-// @grant        none
+// @grant        unsafeWindow
 // @updateURL    https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js
 // @downloadURL  https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js
 // @homepageURL  https://github.com/Achillesy/JavaScript-UnRecall
@@ -169,9 +169,12 @@
   }
 
   // ── fetch intercept ───────────────────────────────────────────────────────
+  // unsafeWindow is the page's real window; required in Chrome MV3 where
+  // @grant none runs in an isolated world and window.fetch is a sandbox copy.
 
-  const _fetch = window.fetch;
-  window.fetch = async function (...args) {
+  const _win = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+  const _fetch = _win.fetch.bind(_win);
+  _win.fetch = async function (...args) {
     const url = args[0] instanceof Request ? args[0].url : String(args[0]);
     const res = await _fetch.apply(this, args);
     if (!ENDPOINT_RE.test(url)) return res;
