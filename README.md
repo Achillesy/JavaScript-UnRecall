@@ -11,5 +11,5 @@
 ## Install
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) for your browser.
-2. Click → **[Install UnRecall](https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/main/unrecall.user.js)**
+2. Click → **[Install UnRecall](https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js)**
 3. Confirm in the Tampermonkey dialog and visit [chat.deepseek.com](https://chat.deepseek.com).

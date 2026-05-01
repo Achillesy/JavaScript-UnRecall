@@ -7,8 +7,8 @@
 // @match        https://chat.deepseek.com/*
 // @run-at       document-start
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/main/unrecall.user.js
-// @downloadURL  https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/main/unrecall.user.js
+// @updateURL    https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js
+// @downloadURL  https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js
 // @homepageURL  https://github.com/Achillesy/JavaScript-UnRecall
 // ==/UserScript==
 
