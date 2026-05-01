@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.1.0
+// @version      1.1.1
 // @description  Captures DeepSeek replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
@@ -25,7 +25,7 @@
   // ── state ─────────────────────────────────────────────────────────────────
 
   const sessions = []; // captured messages (newest last)
-  let ui = null;       // { panel, body, cnt, arr }
+  let ui = null;
 
   // ── path helpers ──────────────────────────────────────────────────────────
 
@@ -433,10 +433,10 @@
     body.innerHTML = sessions.slice().reverse().map(s => {
       const fragsHTML = s.fragments.map(f => {
         const kind =
-          f.type === 'THINK'    ? 'think'    :
+          f.type === 'THINK' ? 'think' :
           f.type === 'RESPONSE' ? 'response' : 'other';
         const label =
-          f.type === 'THINK'    ? '◆ THINK'    :
+          f.type === 'THINK' ? '◆ THINK' :
           f.type === 'RESPONSE' ? '◆ RESPONSE' : `◆ ${esc(f.type)}`;
         // THINK collapsed by default; RESPONSE and others open
         const open = f.type !== 'THINK';
@@ -470,6 +470,14 @@
     if (sessions.length === 1 || last.censored) {
       panel.classList.add('ur-open');
     }
+  }
+
+  // Insert the tab immediately on page load — visible even before any capture.
+  // This confirms the script is running regardless of fetch interception.
+  if (document.body) {
+    ensureUI();
+  } else {
+    document.addEventListener('DOMContentLoaded', ensureUI, { once: true });
   }
 
 })();
