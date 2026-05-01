@@ -7,3 +7,9 @@
 >>然与AI对谈，AI亦撤其言——此可忍乎？
 
 **此插件专为记录AI反悔之语而作，聊慰诸君一时好奇耳。**
+
+## Install
+
+1. Install [Tampermonkey](https://www.tampermonkey.net/) for your browser.
+2. Click → **[Install UnRecall](https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/main/unrecall.user.js)**
+3. Confirm in the Tampermonkey dialog and visit [chat.deepseek.com](https://chat.deepseek.com).
