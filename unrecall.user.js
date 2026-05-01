@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         UnRecall – DeepSeek NoTakebacks
+// @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.0.0
+// @version      1.1.0
 // @description  Captures DeepSeek replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
@@ -20,7 +20,7 @@
 
   // ── config ────────────────────────────────────────────────────────────────
 
-  const ENDPOINT_RE = /\/(?:api\/)?(?:v\d+\/)?chat\/completion\b/i;
+  const ENDPOINT_RE = /\/chat\/completions?\b/i;
 
   // ── state ─────────────────────────────────────────────────────────────────
 
@@ -188,40 +188,86 @@
   // ── UI ────────────────────────────────────────────────────────────────────
 
   const CSS = `
+    /* ── always-visible tab on the right edge ── */
+    #ur-tab {
+      all: initial;
+      position: fixed;
+      top: 120px;
+      right: 0;
+      width: 40px;
+      height: 68px;
+      background: linear-gradient(170deg, #3535bb, #6040cc);
+      border: 2px solid #7766ff;
+      border-right: none;
+      border-radius: 10px 0 0 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      cursor: pointer;
+      z-index: 2147483647;
+      box-shadow: -4px 2px 18px rgba(80,60,230,.5);
+      user-select: none;
+      transition: filter .15s;
+    }
+    #ur-tab:hover { filter: brightness(1.25); }
+    #ur-tab-icon { font-size: 18px; line-height: 1; }
+    #ur-tab-cnt {
+      background: #ee2222;
+      color: #fff;
+      border-radius: 99px;
+      font: 700 10px/18px -apple-system,BlinkMacSystemFont,sans-serif;
+      min-width: 18px;
+      height: 18px;
+      text-align: center;
+      padding: 0 4px;
+      display: none;
+    }
+    #ur-tab-cnt.ur-show { display: block; }
+    @keyframes ur-flash {
+      0%,100% { filter: brightness(1); }
+      50%      { filter: brightness(1.8) saturate(1.4); }
+    }
+    #ur-tab.ur-flash { animation: ur-flash .45s ease 3; }
+
+    /* ── slide-in panel (sits left of the tab) ── */
     #ur-panel {
       all: initial;
       position: fixed;
-      top: 80px;
-      right: 0;
+      top: 120px;
+      right: 40px;
       width: 360px;
-      max-height: calc(100vh - 96px);
+      max-height: calc(100vh - 140px);
       background: #12121f;
-      border: 1px solid #2a2a45;
+      border: 1px solid #2a2a55;
       border-right: none;
       border-radius: 10px 0 0 10px;
-      box-shadow: -6px 0 24px rgba(0,0,0,.55);
-      z-index: 2147483647;
+      box-shadow: -6px 0 24px rgba(20,20,100,.55);
+      z-index: 2147483646;
       display: flex;
       flex-direction: column;
       font: 13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
       color: #d0d0e8;
+      transform: translateX(calc(100% + 40px));
       transition: transform .25s ease;
+      pointer-events: none;
     }
-    #ur-panel.ur-collapsed { transform: translateX(calc(100% - 36px)); }
+    #ur-panel.ur-open {
+      transform: translateX(0);
+      pointer-events: auto;
+    }
 
     #ur-head {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 8px 12px;
+      padding: 9px 12px;
       background: #0c0c1a;
-      border-bottom: 1px solid #2a2a45;
+      border-bottom: 1px solid #2a2a55;
       border-radius: 10px 0 0 0;
-      cursor: pointer;
-      user-select: none;
       flex-shrink: 0;
     }
-    #ur-head .ur-icon { font-size: 15px; }
     #ur-head .ur-name {
       flex: 1;
       font-weight: 700;
@@ -229,17 +275,15 @@
       letter-spacing: 1px;
       color: #8888cc;
     }
-    #ur-head .ur-cnt {
-      background: #22225a;
-      color: #8888d0;
-      border-radius: 99px;
-      padding: 0 7px;
-      font-size: 11px;
-      line-height: 18px;
-      min-width: 20px;
-      text-align: center;
+    #ur-head .ur-close {
+      color: #5050a0;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      user-select: none;
+      padding: 0 2px;
     }
-    #ur-head .ur-toggle { color: #5050a0; font-size: 10px; }
+    #ur-head .ur-close:hover { color: #aaaadd; }
 
     #ur-body { overflow-y: auto; flex: 1; }
     .ur-empty {
@@ -317,29 +361,28 @@
     style.textContent = CSS;
     (document.head || document.documentElement).appendChild(style);
 
+    // Always-visible tab button
+    const tab = document.createElement('div');
+    tab.id = 'ur-tab';
+    tab.innerHTML = `<span id="ur-tab-icon">🔍</span><span id="ur-tab-cnt"></span>`;
+    document.body.appendChild(tab);
+
+    // Slide-in panel
     const panel = document.createElement('div');
     panel.id = 'ur-panel';
-    panel.className = 'ur-collapsed';
     panel.innerHTML =
       `<div id="ur-head">` +
-        `<span class="ur-icon">🔍</span>` +
         `<span class="ur-name">UNRECALL</span>` +
-        `<span class="ur-cnt" id="ur-cnt">0</span>` +
-        `<span class="ur-toggle" id="ur-toggle">◀</span>` +
+        `<span class="ur-close" id="ur-close">✕</span>` +
       `</div>` +
       `<div id="ur-body">` +
-        `<div class="ur-empty">Watching for censored responses…<br>Nothing captured yet.</div>` +
+        `<div class="ur-empty">Watching for responses…<br>Nothing captured yet.</div>` +
       `</div>`;
     document.body.appendChild(panel);
 
-    // Toggle panel open/closed
-    document.getElementById('ur-head').addEventListener('click', () => {
-      panel.classList.toggle('ur-collapsed');
-      document.getElementById('ur-toggle').textContent =
-        panel.classList.contains('ur-collapsed') ? '◀' : '▶';
-    });
+    tab.addEventListener('click', () => panel.classList.toggle('ur-open'));
+    document.getElementById('ur-close').addEventListener('click', () => panel.classList.remove('ur-open'));
 
-    // Collapse/expand individual fragment sections via event delegation
     document.getElementById('ur-body').addEventListener('click', e => {
       const label = e.target.closest('.ur-flabel');
       if (!label) return;
@@ -351,9 +394,9 @@
 
     ui = {
       panel,
+      tab,
       body:   document.getElementById('ur-body'),
-      cnt:    document.getElementById('ur-cnt'),
-      toggle: document.getElementById('ur-toggle'),
+      tabCnt: document.getElementById('ur-tab-cnt'),
     };
   }
 
@@ -372,8 +415,18 @@
     ensureUI();
     if (!ui) return;
 
-    const { panel, body, cnt, toggle } = ui;
-    cnt.textContent = sessions.length;
+    const { panel, tab, body, tabCnt } = ui;
+
+    // Update tab badge
+    if (sessions.length > 0) {
+      tabCnt.textContent = sessions.length;
+      tabCnt.classList.add('ur-show');
+    }
+
+    // Flash tab to signal new capture
+    tab.classList.remove('ur-flash');
+    void tab.offsetWidth; // reflow to restart animation
+    tab.classList.add('ur-flash');
 
     if (!sessions.length) return;
 
@@ -412,10 +465,10 @@
       );
     }).join('');
 
-    // Auto-open panel when a censored response is captured
-    if (sessions[sessions.length - 1].censored) {
-      panel.classList.remove('ur-collapsed');
-      toggle.textContent = '▶';
+    // Auto-open on first capture and on every censored response
+    const last = sessions[sessions.length - 1];
+    if (sessions.length === 1 || last.censored) {
+      panel.classList.add('ur-open');
     }
   }
 
