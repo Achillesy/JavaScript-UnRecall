@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.5.1
+// @version      1.5.2
 // @description  Captures chatbot replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
@@ -79,24 +79,40 @@
     function createProcessor() {
       const state = {};
       let lastPath = null;
+      let lastOp = null;   // 'APPEND' | 'SET' | 'BATCH' — for continuation packets
       let censored = false;
       let done = false;
 
       function handlePacket(pkt) {
+        // Continuation / init packet (no p, no o, just v).
         if (pkt.p === undefined && pkt.o === undefined && pkt.v !== undefined) {
-          if (pkt.v && typeof pkt.v === 'object' && pkt.v.response) {
+          // Init: {"v": {"response": {...}}}
+          if (pkt.v && typeof pkt.v === 'object' && !Array.isArray(pkt.v) && pkt.v.response) {
             state.response = JSON.parse(JSON.stringify(pkt.v.response));
             lastPath = null;
-          } else if (typeof pkt.v === 'string' && lastPath) {
-            applyAppend(state, lastPath, pkt.v);
+            lastOp = null;
+            return;
           }
+          if (!lastPath) return;
+          // Continuation of a BATCH on the same path: {"v": [ ...sub-patches ]}.
+          // This is how DeepSeek delivers post-hoc CONTENT_FILTER replacements
+          // after a fully-generated answer — without it the censorship signal
+          // is silently dropped.
+          if (lastOp === 'BATCH' && Array.isArray(pkt.v)) {
+            handleBatch(lastPath, pkt.v);
+            return;
+          }
+          // Continuation of an APPEND: {"v": "next token"}.
+          applyAppend(state, lastPath, pkt.v);
           return;
         }
         if (pkt.p === undefined) return;
         lastPath = pkt.p;
 
-        if (pkt.o === 'BATCH') { handleBatch(pkt.p, pkt.v || []); return; }
-        if (pkt.o === 'SET') { applySet(state, pkt.p, pkt.v); return; }
+        if (pkt.o === 'BATCH') { lastOp = 'BATCH'; handleBatch(pkt.p, pkt.v || []); return; }
+        if (pkt.o === 'SET')   { lastOp = 'SET';   applySet(state, pkt.p, pkt.v); return; }
+        // APPEND — explicit or implicit (p present, o absent)
+        lastOp = 'APPEND';
         applyAppend(state, pkt.p, pkt.v);
       }
 
