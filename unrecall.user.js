@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.6.0
+// @version      1.6.1
 // @description  Captures chatbot replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
-// @match        https://www.doubao.com/*
-// @match        https://chat2.qianwen.com/*
+// @match        https://*.qianwen.com/*
 // @run-at       document-start
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js
