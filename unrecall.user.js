@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.5.0
+// @version      1.5.1
 // @description  Captures chatbot replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
@@ -438,6 +438,12 @@
     `;
 
     function ensureUI() {
+      // SPA navigation (DeepSeek left-sidebar switch / new chat) re-renders
+      // <body>'s subtree and React strips out our tab/panel since it doesn't
+      // own them. Detect detachment and rebuild from scratch.
+      if (ui && document.body && !document.body.contains(ui.tab)) {
+        ui = null;
+      }
       if (ui || !document.body) return;
 
       const style = document.createElement('style');
@@ -561,12 +567,63 @@
       panel.classList.add('ur-open');
     }
 
-    // ── boot ────────────────────────────────────────────────────────────────
-    // Show the tab immediately so its presence confirms successful injection.
-    if (document.body) {
+    // ── boot + SPA-resilient UI mounting ────────────────────────────────────
+    // The XHR / fetch / EventSource hooks are installed on prototypes once and
+    // survive SPA navigation forever. The UI elements, however, get torn down
+    // by React when the user switches conversations. Three layers of defense:
+    //   1. ensureUI auto-detects detached tab and rebuilds.
+    //   2. MutationObserver watches <body> and re-mounts on demand.
+    //   3. history.pushState / replaceState / popstate hooks force a check
+    //      right after every SPA navigation.
+    // The captured `sessions` array lives in this closure and persists across
+    // navigations, so re-mounting just re-renders the existing list.
+
+    function mountOrRemount() {
+      if (!document.body) return;
       ensureUI();
+      // Re-render content whenever we (re)mount so the bin shows the right
+      // empty/full state and any previously captured sessions reappear.
+      renderPanel();
+    }
+
+    function watchBody() {
+      if (!document.body) return;
+      const obs = new MutationObserver(() => {
+        if (ui && !document.body.contains(ui.tab)) {
+          ui = null;
+          mountOrRemount();
+        }
+      });
+      obs.observe(document.body, { childList: true });
+    }
+
+    function watchNavigation() {
+      const wrap = (key) => {
+        const orig = history[key];
+        if (!orig) return;
+        history[key] = function () {
+          const result = orig.apply(this, arguments);
+          // React updates the tree synchronously; wait one frame to let it
+          // settle before we re-mount.
+          setTimeout(mountOrRemount, 50);
+          return result;
+        };
+      };
+      wrap('pushState');
+      wrap('replaceState');
+      window.addEventListener('popstate', () => setTimeout(mountOrRemount, 50));
+    }
+
+    function boot() {
+      mountOrRemount();
+      watchBody();
+      watchNavigation();
+    }
+
+    if (document.body) {
+      boot();
     } else {
-      document.addEventListener('DOMContentLoaded', ensureUI, { once: true });
+      document.addEventListener('DOMContentLoaded', boot, { once: true });
     }
   }
 
