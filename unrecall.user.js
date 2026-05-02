@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.5.2
+// @version      1.6.0
 // @description  Captures chatbot replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
+// @match        https://www.doubao.com/*
+// @match        https://chat2.qianwen.com/*
 // @run-at       document-start
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js
@@ -36,7 +38,8 @@
   function pageWorld() {
     'use strict';
 
-    const ENDPOINT_RE = /\/chat\/completions?\b/i;
+    const ENDPOINT_RE = /(?:\/chat\/completions?\b|\/api\/v2\/chat\b)/i;
+    const QIANWEN_RE = /qianwen\.com/i;
     const sessions = [];
     let ui = null;
 
@@ -159,10 +162,52 @@
       return { handlePacket, finish };
     }
 
+    // ── Qianwen processor ───────────────────────────────────────────────────
+    // Qianwen streams full accumulated text in each SSE packet under
+    // data.messages[].content (mime_type "multi_load/iframe").  Retraction
+    // arrives as a separate "event:audit" with {"code":"AU001"}.
+
+    function createQianwenProcessor() {
+      let lastContent = '';
+      let reqId = null;
+      let censored = false;
+      let done = false;
+
+      function handlePacket(pkt, eventType) {
+        if (eventType === 'audit') {
+          if (pkt && pkt.code === 'AU001') censored = true;
+          return;
+        }
+        if (!pkt || !pkt.data) return;
+        if (pkt.communication && pkt.communication.reqid) reqId = pkt.communication.reqid;
+        const msgs = pkt.data.messages;
+        if (!Array.isArray(msgs)) return;
+        for (const msg of msgs) {
+          if (msg.mime_type === 'multi_load/iframe' && typeof msg.content === 'string') {
+            lastContent = msg.content;
+          }
+        }
+      }
+
+      function finish() {
+        if (done) return;
+        done = true;
+        if (!censored || !lastContent) return;
+        sessions.push({
+          id: reqId || String(Date.now()),
+          fragments: [{ type: 'RESPONSE', content: lastContent }],
+          time: Date.now(),
+        });
+        renderPanel();
+      }
+
+      return { handlePacket, finish };
+    }
+
     // ── SSE consumer ────────────────────────────────────────────────────────
 
-    async function consumeSSE(stream) {
-      const proc = createProcessor();
+    async function consumeSSE(stream, url) {
+      const proc = QIANWEN_RE.test(url) ? createQianwenProcessor() : createProcessor();
       const decoder = new TextDecoder();
       const reader = stream.getReader();
       let buf = '';
@@ -180,6 +225,10 @@
               evt = line.slice(6).trim();
             } else if (line.startsWith('data:')) {
               if (evt === 'close') { proc.finish(); return; }
+              if (evt === 'audit') {
+                try { proc.handlePacket(JSON.parse(line.slice(5).trim()), 'audit'); } catch { /* skip */ }
+                proc.finish(); return;
+              }
               try { proc.handlePacket(JSON.parse(line.slice(5).trim())); } catch { /* skip */ }
             } else if (line === '') {
               evt = null;
@@ -206,6 +255,10 @@
           state.evt = line.slice(6).trim();
         } else if (line.startsWith('data:')) {
           if (state.evt === 'close') { state.proc.finish(); return; }
+          if (state.evt === 'audit') {
+            try { state.proc.handlePacket(JSON.parse(line.slice(5).trim()), 'audit'); } catch { /* skip */ }
+            state.proc.finish(); return;
+          }
           try { state.proc.handlePacket(JSON.parse(line.slice(5).trim())); } catch { /* skip */ }
         } else if (line === '') {
           state.evt = null;
@@ -221,7 +274,7 @@
       if (!ENDPOINT_RE.test(url)) return res;
       if (!(res.headers.get('content-type') || '').includes('text/event-stream')) return res;
       const [s1, s2] = res.body.tee();
-      consumeSSE(s1);
+      consumeSSE(s1, url);
       return new Response(s2, {
         status: res.status,
         statusText: res.statusText,
@@ -233,12 +286,15 @@
     const _xhrOpen = XMLHttpRequest.prototype.open;
     const _xhrSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-      this.__urMatch = ENDPOINT_RE.test(String(url));
+      const u = String(url);
+      this.__urMatch = ENDPOINT_RE.test(u);
+      this.__urUrl = this.__urMatch ? u : null;
       return _xhrOpen.apply(this, [method, url, ...rest]);
     };
     XMLHttpRequest.prototype.send = function (body) {
       if (this.__urMatch) {
-        const sse = { proc: createProcessor(), buf: '', evt: null, processed: 0 };
+        const proc = QIANWEN_RE.test(this.__urUrl) ? createQianwenProcessor() : createProcessor();
+        const sse = { proc, buf: '', evt: null, processed: 0 };
         this.addEventListener('readystatechange', () => {
           // readyState 3 = LOADING (chunks arriving), 4 = DONE
           if (this.readyState >= 3) {
