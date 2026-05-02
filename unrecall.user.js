@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.4.1
+// @version      1.4.2
 // @description  Captures chatbot replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
@@ -80,6 +80,7 @@
       const state = {};
       let lastPath = null;
       let censored = false;
+      let done = false;
 
       function handlePacket(pkt) {
         if (pkt.p === undefined && pkt.o === undefined && pkt.v !== undefined) {
@@ -119,6 +120,10 @@
       }
 
       function finish() {
+        // SSE close event AND XHR readyState=4 (or fetch try/finally) both
+        // trigger finish for the same stream — guard against double push.
+        if (done) return;
+        done = true;
         const r = state.response;
         if (!r) return;
         const frags = (r.fragments || []).filter(
