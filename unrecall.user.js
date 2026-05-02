@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.4.0
+// @version      1.4.1
 // @description  Captures chatbot replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
@@ -169,13 +169,55 @@
       }
     }
 
-    // ── fetch intercept ─────────────────────────────────────────────────────
+    // ── network interception (fetch / XHR / EventSource) ───────────────────
+    // We intercept all three to (a) capture SSE no matter which API the chat
+    // app uses, and (b) drive a visible diagnostic state on the tab so we can
+    // tell which API is actually being called when interception fails.
 
+    const counts = { f: 0, fm: 0, x: 0, xm: 0, e: 0, em: 0 };
+
+    function setTabState() {
+      if (!ui || !ui.tab) return;
+      let state = 'idle';
+      if (counts.em > 0) state = 'es-match';
+      else if (counts.xm > 0) state = 'xhr-match';
+      else if (counts.fm > 0) state = 'fetch-match';
+      else if (counts.f > 0) state = 'fetch-any';
+      ui.tab.dataset.state = state;
+      ui.tab.title =
+        'fetch: ' + counts.f + ' (' + counts.fm + ' match) | ' +
+        'XHR: ' + counts.x + ' (' + counts.xm + ' match) | ' +
+        'ES: ' + counts.e + ' (' + counts.em + ' match)';
+    }
+
+    // Process an SSE text stream chunked line-by-line (used by XHR path).
+    function feedSSEChunk(state, chunk) {
+      state.buf += chunk;
+      const lines = state.buf.split('\n');
+      state.buf = lines.pop();
+      for (const raw of lines) {
+        const line = raw.trimEnd();
+        if (line.startsWith('event:')) {
+          state.evt = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
+          if (state.evt === 'close') { state.proc.finish(); return; }
+          try { state.proc.handlePacket(JSON.parse(line.slice(5).trim())); } catch { /* skip */ }
+        } else if (line === '') {
+          state.evt = null;
+        }
+      }
+    }
+
+    // ── fetch ──────────────────────────────────────────────────────────────
     const _fetch = window.fetch.bind(window);
     window.fetch = async function (...args) {
+      counts.f++;
       const url = args[0] instanceof Request ? args[0].url : String(args[0]);
+      const matched = ENDPOINT_RE.test(url);
+      if (matched) counts.fm++;
+      setTabState();
       const res = await _fetch.apply(this, args);
-      if (!ENDPOINT_RE.test(url)) return res;
+      if (!matched) return res;
       if (!(res.headers.get('content-type') || '').includes('text/event-stream')) return res;
       const [s1, s2] = res.body.tee();
       consumeSSE(s1);
@@ -185,6 +227,61 @@
         headers: res.headers,
       });
     };
+
+    // ── XMLHttpRequest ─────────────────────────────────────────────────────
+    const _xhrOpen = XMLHttpRequest.prototype.open;
+    const _xhrSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      counts.x++;
+      this.__urUrl = String(url);
+      if (ENDPOINT_RE.test(this.__urUrl)) {
+        counts.xm++;
+        this.__urMatch = true;
+      }
+      setTabState();
+      return _xhrOpen.apply(this, [method, url, ...rest]);
+    };
+    XMLHttpRequest.prototype.send = function (body) {
+      if (this.__urMatch) {
+        const sse = { proc: createProcessor(), buf: '', evt: null, processed: 0 };
+        this.addEventListener('readystatechange', () => {
+          // readyState 3 = LOADING (chunks arriving), 4 = DONE
+          if (this.readyState >= 3) {
+            const text = this.responseText || '';
+            if (text.length > sse.processed) {
+              feedSSEChunk(sse, text.slice(sse.processed));
+              sse.processed = text.length;
+            }
+          }
+          if (this.readyState === 4) sse.proc.finish();
+        });
+      }
+      return _xhrSend.call(this, body);
+    };
+
+    // ── EventSource ────────────────────────────────────────────────────────
+    const _ES = window.EventSource;
+    if (_ES) {
+      const WrappedES = function (url, init) {
+        counts.e++;
+        const matched = ENDPOINT_RE.test(String(url));
+        if (matched) counts.em++;
+        setTabState();
+        const es = new _ES(url, init);
+        if (matched) {
+          const proc = createProcessor();
+          es.addEventListener('message', (e) => {
+            try { proc.handlePacket(JSON.parse(e.data)); } catch { /* skip */ }
+          });
+          es.addEventListener('close', () => proc.finish());
+          es.addEventListener('error', () => proc.finish());
+        }
+        return es;
+      };
+      WrappedES.prototype = _ES.prototype;
+      Object.assign(WrappedES, _ES);
+      window.EventSource = WrappedES;
+    }
 
     // ── UI ──────────────────────────────────────────────────────────────────
 
@@ -212,6 +309,11 @@
         transition: filter .15s;
       }
       #ur-tab:hover { filter: brightness(1.25); }
+      /* Diagnostic states — change tab color to reveal which network API the page actually uses */
+      #ur-tab[data-state="fetch-any"]   { background: linear-gradient(170deg, #aa9900, #ccaa00); border-color: #ddcc55; }
+      #ur-tab[data-state="fetch-match"] { background: linear-gradient(170deg, #228822, #44aa44); border-color: #66cc66; }
+      #ur-tab[data-state="xhr-match"]   { background: linear-gradient(170deg, #cc6600, #ee8800); border-color: #ffaa44; }
+      #ur-tab[data-state="es-match"]    { background: linear-gradient(170deg, #008888, #00aaaa); border-color: #44cccc; }
       #ur-tab-icon { font-size: 18px; line-height: 1; }
       #ur-tab-cnt {
         background: #ee2222;
