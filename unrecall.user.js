@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.4.2
+// @version      1.5.0
 // @description  Captures chatbot replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
@@ -124,6 +124,8 @@
         // trigger finish for the same stream — guard against double push.
         if (done) return;
         done = true;
+        // Only retain censored responses; normal completions are dropped.
+        if (!censored) return;
         const r = state.response;
         if (!r) return;
         const frags = (r.fragments || []).filter(
@@ -132,7 +134,6 @@
         if (!frags.length) return;
         sessions.push({
           id: r.message_id,
-          censored,
           fragments: frags,
           time: Date.now(),
         });
@@ -175,25 +176,8 @@
     }
 
     // ── network interception (fetch / XHR / EventSource) ───────────────────
-    // We intercept all three to (a) capture SSE no matter which API the chat
-    // app uses, and (b) drive a visible diagnostic state on the tab so we can
-    // tell which API is actually being called when interception fails.
-
-    const counts = { f: 0, fm: 0, x: 0, xm: 0, e: 0, em: 0 };
-
-    function setTabState() {
-      if (!ui || !ui.tab) return;
-      let state = 'idle';
-      if (counts.em > 0) state = 'es-match';
-      else if (counts.xm > 0) state = 'xhr-match';
-      else if (counts.fm > 0) state = 'fetch-match';
-      else if (counts.f > 0) state = 'fetch-any';
-      ui.tab.dataset.state = state;
-      ui.tab.title =
-        'fetch: ' + counts.f + ' (' + counts.fm + ' match) | ' +
-        'XHR: ' + counts.x + ' (' + counts.xm + ' match) | ' +
-        'ES: ' + counts.e + ' (' + counts.em + ' match)';
-    }
+    // All three are hooked so SSE can be captured regardless of which API the
+    // chat app uses (DeepSeek uses XHR; other chatbots may differ).
 
     // Process an SSE text stream chunked line-by-line (used by XHR path).
     function feedSSEChunk(state, chunk) {
@@ -216,13 +200,9 @@
     // ── fetch ──────────────────────────────────────────────────────────────
     const _fetch = window.fetch.bind(window);
     window.fetch = async function (...args) {
-      counts.f++;
       const url = args[0] instanceof Request ? args[0].url : String(args[0]);
-      const matched = ENDPOINT_RE.test(url);
-      if (matched) counts.fm++;
-      setTabState();
       const res = await _fetch.apply(this, args);
-      if (!matched) return res;
+      if (!ENDPOINT_RE.test(url)) return res;
       if (!(res.headers.get('content-type') || '').includes('text/event-stream')) return res;
       const [s1, s2] = res.body.tee();
       consumeSSE(s1);
@@ -237,13 +217,7 @@
     const _xhrOpen = XMLHttpRequest.prototype.open;
     const _xhrSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-      counts.x++;
-      this.__urUrl = String(url);
-      if (ENDPOINT_RE.test(this.__urUrl)) {
-        counts.xm++;
-        this.__urMatch = true;
-      }
-      setTabState();
+      this.__urMatch = ENDPOINT_RE.test(String(url));
       return _xhrOpen.apply(this, [method, url, ...rest]);
     };
     XMLHttpRequest.prototype.send = function (body) {
@@ -268,12 +242,8 @@
     const _ES = window.EventSource;
     if (_ES) {
       const WrappedES = function (url, init) {
-        counts.e++;
-        const matched = ENDPOINT_RE.test(String(url));
-        if (matched) counts.em++;
-        setTabState();
         const es = new _ES(url, init);
-        if (matched) {
+        if (ENDPOINT_RE.test(String(url))) {
           const proc = createProcessor();
           es.addEventListener('message', (e) => {
             try { proc.handlePacket(JSON.parse(e.data)); } catch { /* skip */ }
@@ -291,71 +261,80 @@
     // ── UI ──────────────────────────────────────────────────────────────────
 
     const CSS = `
+      /* ── Recycle-bin tab on right edge ────────────────────────────────── */
       #ur-tab {
         all: initial;
         position: fixed;
         top: 120px;
         right: 0;
-        width: 40px;
-        height: 68px;
-        background: linear-gradient(170deg, #3535bb, #6040cc);
-        border: 2px solid #7766ff;
+        width: 44px;
+        height: 56px;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
         border-right: none;
         border-radius: 10px 0 0 10px;
         display: flex;
-        flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 5px;
         cursor: pointer;
         z-index: 2147483647;
-        box-shadow: -4px 2px 18px rgba(80,60,230,.5);
+        box-shadow: -3px 0 12px rgba(0,0,0,.08);
         user-select: none;
-        transition: filter .15s;
+        color: #6b7280;
+        transition: color .15s, background .15s;
       }
-      #ur-tab:hover { filter: brightness(1.25); }
-      /* Diagnostic states — change tab color to reveal which network API the page actually uses */
-      #ur-tab[data-state="fetch-any"]   { background: linear-gradient(170deg, #aa9900, #ccaa00); border-color: #ddcc55; }
-      #ur-tab[data-state="fetch-match"] { background: linear-gradient(170deg, #228822, #44aa44); border-color: #66cc66; }
-      #ur-tab[data-state="xhr-match"]   { background: linear-gradient(170deg, #cc6600, #ee8800); border-color: #ffaa44; }
-      #ur-tab[data-state="es-match"]    { background: linear-gradient(170deg, #008888, #00aaaa); border-color: #44cccc; }
-      #ur-tab-icon { font-size: 18px; line-height: 1; }
+      #ur-tab:hover {
+        background: #f9fafb;
+        color: #4d6bfe;
+      }
+      #ur-tab[data-full="1"] {
+        color: #dc2626;
+        background: #fef2f2;
+        border-color: #fecaca;
+      }
+      #ur-tab[data-full="1"]:hover {
+        background: #fee2e2;
+      }
+      #ur-tab svg { display: block; }
+      #ur-tab .ur-icon-full { display: none; }
+      #ur-tab[data-full="1"] .ur-icon-empty { display: none; }
+      #ur-tab[data-full="1"] .ur-icon-full { display: block; }
       #ur-tab-cnt {
-        background: #ee2222;
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        background: #dc2626;
         color: #fff;
         border-radius: 99px;
-        font: 700 10px/18px -apple-system,BlinkMacSystemFont,sans-serif;
-        min-width: 18px;
-        height: 18px;
+        font: 700 11px/18px -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+        min-width: 20px;
+        height: 20px;
         text-align: center;
-        padding: 0 4px;
+        padding: 0 5px;
+        box-shadow: 0 2px 6px rgba(220,38,38,.35);
         display: none;
       }
       #ur-tab-cnt.ur-show { display: block; }
-      @keyframes ur-flash {
-        0%,100% { filter: brightness(1); }
-        50%      { filter: brightness(1.8) saturate(1.4); }
-      }
-      #ur-tab.ur-flash { animation: ur-flash .45s ease 3; }
 
+      /* ── Slide-in panel ───────────────────────────────────────────────── */
       #ur-panel {
         all: initial;
         position: fixed;
         top: 120px;
-        right: 40px;
-        width: 360px;
+        right: 44px;
+        width: 420px;
         max-height: calc(100vh - 140px);
-        background: #12121f;
-        border: 1px solid #2a2a55;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
         border-right: none;
         border-radius: 10px 0 0 10px;
-        box-shadow: -6px 0 24px rgba(20,20,100,.55);
+        box-shadow: -8px 0 32px rgba(0,0,0,.12);
         z-index: 2147483646;
         display: flex;
         flex-direction: column;
-        font: 13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-        color: #d0d0e8;
-        transform: translateX(calc(100% + 40px));
+        font: 15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+        color: #1f2937;
+        transform: translateX(calc(100% + 44px));
         transition: transform .25s ease;
         pointer-events: none;
       }
@@ -366,89 +345,94 @@
       #ur-head {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 9px 12px;
-        background: #0c0c1a;
-        border-bottom: 1px solid #2a2a55;
+        gap: 10px;
+        padding: 12px 16px;
+        background: #f9fafb;
+        border-bottom: 1px solid #e5e7eb;
         border-radius: 10px 0 0 0;
         flex-shrink: 0;
       }
       #ur-head .ur-name {
         flex: 1;
-        font-weight: 700;
-        font-size: 11px;
-        letter-spacing: 1px;
-        color: #8888cc;
+        font-weight: 600;
+        font-size: 14px;
+        color: #4d6bfe;
+        letter-spacing: .5px;
       }
       #ur-head .ur-close {
-        color: #5050a0;
+        color: #9ca3af;
         cursor: pointer;
-        font-size: 16px;
+        font-size: 18px;
         line-height: 1;
         user-select: none;
-        padding: 0 2px;
+        padding: 0 4px;
       }
-      #ur-head .ur-close:hover { color: #aaaadd; }
+      #ur-head .ur-close:hover { color: #1f2937; }
+
       #ur-body { overflow-y: auto; flex: 1; }
       .ur-empty {
-        color: #383860;
+        color: #9ca3af;
         text-align: center;
-        padding: 36px 16px;
-        font-size: 12px;
-        line-height: 1.6;
+        padding: 48px 20px;
+        font-size: 14px;
+        line-height: 1.7;
       }
-      .ur-card { border-bottom: 1px solid #1c1c30; padding: 10px 12px; }
+
+      /* ── Capture cards ───────────────────────────────────────────────── */
+      .ur-card { border-bottom: 1px solid #f3f4f6; padding: 14px 16px; }
       .ur-card:last-child { border-bottom: none; }
       .ur-card-head {
         display: flex;
         align-items: center;
-        gap: 6px;
-        margin-bottom: 8px;
+        gap: 8px;
+        margin-bottom: 12px;
       }
       .ur-badge {
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: .5px;
-        padding: 2px 8px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: .3px;
+        padding: 3px 10px;
         border-radius: 99px;
+        background: #fee2e2;
+        color: #dc2626;
+        border: 1px solid #fecaca;
       }
-      .ur-ok  { background: #0c2a10; color: #5db86a; border: 1px solid #1a4a22; }
-      .ur-cut { background: #2a0c0c; color: #cc5555; border: 1px solid #4a1818; }
-      .ur-meta { font-size: 10px; color: #34345a; margin-left: auto; }
-      .ur-frag { margin-bottom: 5px; }
+      .ur-meta { font-size: 12px; color: #9ca3af; margin-left: auto; }
+
+      .ur-frag { margin-bottom: 10px; }
       .ur-flabel {
         display: flex;
         align-items: center;
-        gap: 5px;
-        font-size: 10px;
+        gap: 6px;
+        font-size: 11px;
         font-weight: 700;
-        letter-spacing: .7px;
-        padding: 3px 2px;
+        letter-spacing: .6px;
+        padding: 4px 0 6px;
         cursor: pointer;
         user-select: none;
       }
-      .ur-think    { color: #5a68b8; }
-      .ur-response { color: #4a9858; }
+      .ur-think    { color: #6366f1; }
+      .ur-response { color: #4d6bfe; }
       .ur-chevron {
         display: inline-block;
-        font-size: 8px;
+        font-size: 9px;
         transition: transform .15s;
         width: 10px;
         text-align: center;
       }
       .ur-chevron.open { transform: rotate(90deg); }
       .ur-fcontent {
-        background: #0a0a18;
-        border: 1px solid #1c1c34;
-        border-radius: 4px;
-        padding: 8px 10px;
-        max-height: 200px;
+        background: #f7f7f9;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        padding: 12px 14px;
+        max-height: 320px;
         overflow-y: auto;
         white-space: pre-wrap;
         word-break: break-word;
-        font-size: 12px;
-        line-height: 1.55;
-        color: #b0b0cc;
+        font-size: 14px;
+        line-height: 1.7;
+        color: #1f2937;
       }
       .ur-fcontent.ur-hidden { display: none; }
     `;
@@ -462,18 +446,39 @@
 
       const tab = document.createElement('div');
       tab.id = 'ur-tab';
-      tab.innerHTML = '<span id="ur-tab-icon">🔍</span><span id="ur-tab-cnt"></span>';
+      tab.title = 'UnRecall';
+      tab.innerHTML =
+        // Empty bin (default)
+        '<svg class="ur-icon-empty" width="22" height="22" viewBox="0 0 24 24" fill="none" ' +
+          'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+          '<path d="M3 6h18"/>' +
+          '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>' +
+          '<path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>' +
+          '<path d="M10 11v6M14 11v6"/>' +
+        '</svg>' +
+        // Full bin (with crumpled paper inside)
+        '<svg class="ur-icon-full" width="22" height="22" viewBox="0 0 24 24" fill="none" ' +
+          'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+          '<path d="M3 6h18"/>' +
+          '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>' +
+          '<path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>' +
+          // Crumpled papers
+          '<circle cx="9.5" cy="13" r="1.3" fill="currentColor" stroke="none"/>' +
+          '<circle cx="14.2" cy="14" r="1.6" fill="currentColor" stroke="none"/>' +
+          '<circle cx="11.5" cy="17" r="1.2" fill="currentColor" stroke="none"/>' +
+        '</svg>' +
+        '<span id="ur-tab-cnt"></span>';
       document.body.appendChild(tab);
 
       const panel = document.createElement('div');
       panel.id = 'ur-panel';
       panel.innerHTML =
         '<div id="ur-head">' +
-          '<span class="ur-name">UNRECALL</span>' +
+          '<span class="ur-name">UnRecall · 回收站</span>' +
           '<span class="ur-close" id="ur-close">✕</span>' +
         '</div>' +
         '<div id="ur-body">' +
-          '<div class="ur-empty">Watching for responses…<br>Nothing captured yet.</div>' +
+          '<div class="ur-empty">回收站是空的<br>当对话被撤销时，撤回的内容会出现在这里</div>' +
         '</div>';
       document.body.appendChild(panel);
 
@@ -511,40 +516,40 @@
 
       const { panel, tab, body, tabCnt } = ui;
 
+      // Switch trash bin between empty and full state
       if (sessions.length > 0) {
+        tab.dataset.full = '1';
         tabCnt.textContent = sessions.length;
         tabCnt.classList.add('ur-show');
+      } else {
+        delete tab.dataset.full;
+        tabCnt.classList.remove('ur-show');
       }
-
-      tab.classList.remove('ur-flash');
-      void tab.offsetWidth;
-      tab.classList.add('ur-flash');
 
       if (!sessions.length) return;
 
+      // Newest first
       body.innerHTML = sessions.slice().reverse().map(s => {
         const fragsHTML = s.fragments.map(f => {
           const kind = f.type === 'THINK' ? 'think' : 'response';
-          const label = f.type === 'THINK' ? '◆ THINK' : '◆ RESPONSE';
-          const open = f.type !== 'THINK';
+          const label = f.type === 'THINK' ? '◆ THINK · 思考过程' : '◆ RESPONSE · 回复内容';
+          // Both expanded by default
           return (
             '<div class="ur-frag">' +
               '<div class="ur-flabel ur-' + kind + '">' +
-                '<span class="ur-chevron' + (open ? ' open' : '') + '">▶</span>' + label +
+                '<span class="ur-chevron open">▶</span>' + label +
               '</div>' +
-              '<div class="ur-fcontent' + (open ? '' : ' ur-hidden') + '">' + esc(f.content || '(empty)') + '</div>' +
+              '<div class="ur-fcontent">' + esc(f.content || '(empty)') + '</div>' +
             '</div>'
           );
         }).join('');
 
-        const badgeCls = s.censored ? 'ur-cut' : 'ur-ok';
-        const badgeTxt = s.censored ? '✂ CENSORED' : '✓ FINISHED';
         const time = new Date(s.time).toLocaleTimeString();
 
         return (
           '<div class="ur-card">' +
             '<div class="ur-card-head">' +
-              '<span class="ur-badge ' + badgeCls + '">' + badgeTxt + '</span>' +
+              '<span class="ur-badge">✂ 已撤回</span>' +
               '<span class="ur-meta">msg #' + esc(s.id) + ' · ' + esc(time) + '</span>' +
             '</div>' +
             fragsHTML +
@@ -552,10 +557,8 @@
         );
       }).join('');
 
-      const last = sessions[sessions.length - 1];
-      if (sessions.length === 1 || last.censored) {
-        panel.classList.add('ur-open');
-      }
+      // Auto-open the panel whenever a new censored response arrives
+      panel.classList.add('ur-open');
     }
 
     // ── boot ────────────────────────────────────────────────────────────────
