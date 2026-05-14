@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.6.1
+// @version      1.7.0
 // @description  Captures chatbot replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
 // @match        https://*.qianwen.com/*
+// @match        https://www.doubao.com/*
 // @run-at       document-start
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js
@@ -39,6 +40,7 @@
 
     const ENDPOINT_RE = /(?:\/chat\/completions?\b|\/api\/v2\/chat\b)/i;
     const QIANWEN_RE = /qianwen\.com/i;
+    const DOUBAO_RE = /doubao\.com/i;
     const sessions = [];
     let ui = null;
 
@@ -203,10 +205,182 @@
       return { handlePacket, finish };
     }
 
+    // ── Doubao processor ────────────────────────────────────────────────────
+    // Doubao streams typed SSE events. Text answer is built by:
+    //   1. STREAM_CHUNK patch_op with patch_object:1 (content_block):
+    //      patch_value.content_block[].content.text_block.text — append/init
+    //      with inner patch_type:1; replace with inner patch_type:2; the outer
+    //      patch_type:3 removes a block (used for the search loading_block).
+    //   2. CHUNK_DELTA events: { "text": "..." } — append to the most-recently
+    //      touched text block (block_type 10000); loading blocks (10101) are
+    //      ignored.
+    // Censorship signature: a STREAM_CHUNK whose patch_op contains a
+    // patch_object:50 ext patch with risk_fake_item:"1" or
+    // wrapper_name:"wrapper_name_fake_stream". The same packet typically also
+    // SET-replaces the whole content_block array (patch_object:1, outer
+    // patch_type:2) with the canned "抱歉，我无法回答你的问题" text — we drop
+    // that packet's content and keep the previously accumulated answer.
+
+    function createDoubaoProcessor() {
+      const blocks = new Map();   // block_id -> { text, block_type }
+      const order = [];           // insertion order of block_ids
+      let activeId = null;        // most-recent text block (10000) id
+      let messageId = null;
+      let censored = false;
+      let done = false;
+
+      function trackBlock(id, type) {
+        if (!blocks.has(id)) {
+          blocks.set(id, { text: '', block_type: type });
+          order.push(id);
+        }
+      }
+      function dropBlock(id) {
+        blocks.delete(id);
+        const i = order.indexOf(id);
+        if (i >= 0) order.splice(i, 1);
+        if (activeId === id) activeId = null;
+      }
+
+      function applyBlockItem(cb) {
+        const id = cb.block_id;
+        const type = cb.block_type;
+        const innerOp = cb.patch_type;  // 1=append/init, 2=replace
+        const text = cb.content && cb.content.text_block && cb.content.text_block.text;
+        if (type !== 10000) return;     // skip loading_block (10101) etc.
+        if (innerOp === 2) {
+          // Replace the block's text outright.
+          trackBlock(id, type);
+          blocks.get(id).text = typeof text === 'string' ? text : '';
+        } else {
+          // Append (or initialize on first sight).
+          trackBlock(id, type);
+          if (typeof text === 'string') blocks.get(id).text += text;
+        }
+        activeId = id;
+      }
+
+      function handlePacket(pkt, evt) {
+        if (evt === 'CHUNK_DELTA') {
+          if (censored) return;
+          if (pkt && typeof pkt.text === 'string' && activeId && blocks.has(activeId)) {
+            blocks.get(activeId).text += pkt.text;
+          }
+          return;
+        }
+        if (evt === 'STREAM_MSG_NOTIFY') {
+          if (pkt && pkt.meta && pkt.meta.message_id) messageId = pkt.meta.message_id;
+          const cbs = pkt && pkt.content && pkt.content.content_block;
+          if (Array.isArray(cbs)) for (const cb of cbs) applyBlockItem(cb);
+          return;
+        }
+        if (evt !== 'STREAM_CHUNK') return;
+
+        if (pkt && pkt.message_id) messageId = pkt.message_id;
+        const ops = pkt && pkt.patch_op;
+        if (!Array.isArray(ops)) return;
+
+        // Pre-scan for censorship: ext flags or whole-array replacement on
+        // content_block. Either condition implies the patches in THIS packet
+        // are the canned replacement — drop them in entirety.
+        let packetCensored = false;
+        for (const op of ops) {
+          if (op.patch_object === 50 && op.patch_value && op.patch_value.ext) {
+            const ext = op.patch_value.ext;
+            if (ext.risk_fake_item === '1' || ext.wrapper_name === 'wrapper_name_fake_stream') {
+              packetCensored = true;
+              break;
+            }
+          }
+          if (op.patch_object === 1 && op.patch_type === 2) {
+            packetCensored = true;
+            break;
+          }
+        }
+        if (packetCensored) {
+          censored = true;
+          return;
+        }
+
+        for (const op of ops) {
+          if (op.patch_object !== 1) continue;
+          const cbs = op.patch_value && op.patch_value.content_block;
+          if (!Array.isArray(cbs)) continue;
+          if (op.patch_type === 3) {
+            for (const cb of cbs) dropBlock(cb.block_id);
+          } else {
+            // patch_type 1 (append items to the array; each item carries its
+            // own inner patch_type for the actual text op).
+            for (const cb of cbs) applyBlockItem(cb);
+          }
+        }
+      }
+
+      function finish() {
+        if (done) return;
+        done = true;
+        if (!censored) return;
+        const parts = [];
+        for (const id of order) {
+          const b = blocks.get(id);
+          if (b && b.text) parts.push(b.text);
+        }
+        const content = parts.join('');
+        if (!content) return;
+        sessions.push({
+          id: messageId || String(Date.now()),
+          fragments: [{ type: 'RESPONSE', content }],
+          time: Date.now(),
+        });
+        renderPanel();
+      }
+
+      return { handlePacket, finish };
+    }
+
     // ── SSE consumer ────────────────────────────────────────────────────────
 
+    function pickProcessor(url) {
+      if (DOUBAO_RE.test(url))  return { proc: createDoubaoProcessor(),  kind: 'doubao'  };
+      if (QIANWEN_RE.test(url)) return { proc: createQianwenProcessor(), kind: 'qianwen' };
+      return { proc: createProcessor(), kind: 'deepseek' };
+    }
+
+    // Dispatch one SSE `data:` line. Returns true if the stream is terminal
+    // and the caller should stop reading.
+    function dispatch(proc, kind, evt, data) {
+      if (kind === 'qianwen') {
+        if (evt === 'close') { proc.finish(); return true; }
+        if (evt === 'audit') {
+          try { proc.handlePacket(JSON.parse(data), 'audit'); } catch { /* skip */ }
+          proc.finish(); return true;
+        }
+        try { proc.handlePacket(JSON.parse(data)); } catch { /* skip */ }
+        return false;
+      }
+      if (kind === 'doubao') {
+        // Heartbeat / ack / user-message echo carry no useful state.
+        if (evt === 'SSE_HEARTBEAT' || evt === 'SSE_ACK' || evt === 'FULL_MSG_NOTIFY') return false;
+        if (evt === 'SSE_REPLY_END') {
+          // Three end frames arrive in order (end_type 1, 2, 3). Finish on the
+          // final one — earlier ones still carry useful summary metadata.
+          try {
+            const pkt = JSON.parse(data);
+            if (pkt && pkt.end_type === 3) { proc.finish(); return true; }
+          } catch { /* skip */ }
+          return false;
+        }
+        try { proc.handlePacket(JSON.parse(data), evt); } catch { /* skip */ }
+        return false;
+      }
+      // DeepSeek (default)
+      if (evt === 'close') { proc.finish(); return true; }
+      try { proc.handlePacket(JSON.parse(data)); } catch { /* skip */ }
+      return false;
+    }
+
     async function consumeSSE(stream, url) {
-      const proc = QIANWEN_RE.test(url) ? createQianwenProcessor() : createProcessor();
+      const { proc, kind } = pickProcessor(url);
       const decoder = new TextDecoder();
       const reader = stream.getReader();
       let buf = '';
@@ -223,12 +397,7 @@
             if (line.startsWith('event:')) {
               evt = line.slice(6).trim();
             } else if (line.startsWith('data:')) {
-              if (evt === 'close') { proc.finish(); return; }
-              if (evt === 'audit') {
-                try { proc.handlePacket(JSON.parse(line.slice(5).trim()), 'audit'); } catch { /* skip */ }
-                proc.finish(); return;
-              }
-              try { proc.handlePacket(JSON.parse(line.slice(5).trim())); } catch { /* skip */ }
+              if (dispatch(proc, kind, evt, line.slice(5).trim())) return;
             } else if (line === '') {
               evt = null;
             }
@@ -245,6 +414,7 @@
 
     // Process an SSE text stream chunked line-by-line (used by XHR path).
     function feedSSEChunk(state, chunk) {
+      if (state.terminated) return;
       state.buf += chunk;
       const lines = state.buf.split('\n');
       state.buf = lines.pop();
@@ -253,12 +423,10 @@
         if (line.startsWith('event:')) {
           state.evt = line.slice(6).trim();
         } else if (line.startsWith('data:')) {
-          if (state.evt === 'close') { state.proc.finish(); return; }
-          if (state.evt === 'audit') {
-            try { state.proc.handlePacket(JSON.parse(line.slice(5).trim()), 'audit'); } catch { /* skip */ }
-            state.proc.finish(); return;
+          if (dispatch(state.proc, state.kind, state.evt, line.slice(5).trim())) {
+            state.terminated = true;
+            return;
           }
-          try { state.proc.handlePacket(JSON.parse(line.slice(5).trim())); } catch { /* skip */ }
         } else if (line === '') {
           state.evt = null;
         }
@@ -292,8 +460,8 @@
     };
     XMLHttpRequest.prototype.send = function (body) {
       if (this.__urMatch) {
-        const proc = QIANWEN_RE.test(this.__urUrl) ? createQianwenProcessor() : createProcessor();
-        const sse = { proc, buf: '', evt: null, processed: 0 };
+        const { proc, kind } = pickProcessor(this.__urUrl);
+        const sse = { proc, kind, buf: '', evt: null, processed: 0, terminated: false };
         this.addEventListener('readystatechange', () => {
           // readyState 3 = LOADING (chunks arriving), 4 = DONE
           if (this.readyState >= 3) {
