@@ -973,10 +973,26 @@
 
   // ── inject pageWorld() into the page's native JS context ─────────────────
   // <script> elements run in the page world regardless of MV2/MV3 isolation.
+  // chatgpt.com's CSP blocks unsafe-inline scripts but whitelists blob: URLs.
+  // For ChatGPT we create a Blob and load it via script.src so the code still
+  // runs in the page's JS context (needed to intercept the real window.fetch).
 
-  const injected = document.createElement('script');
-  injected.textContent = '(' + pageWorld.toString() + ')()';
-  (document.documentElement || document.head || document.body).prepend(injected);
-  injected.remove();
+  const _code = '(' + pageWorld.toString() + ')()';
+  const _root = document.documentElement || document.head || document.body;
+
+  if (/chatgpt\.com/i.test(location.hostname)) {
+    const blob = new Blob([_code], { type: 'application/javascript' });
+    const blobUrl = URL.createObjectURL(blob);
+    const injected = document.createElement('script');
+    injected.src = blobUrl;
+    injected.addEventListener('load',  () => { injected.remove(); URL.revokeObjectURL(blobUrl); });
+    injected.addEventListener('error', () => { injected.remove(); URL.revokeObjectURL(blobUrl); });
+    _root.prepend(injected);
+  } else {
+    const injected = document.createElement('script');
+    injected.textContent = _code;
+    _root.prepend(injected);
+    injected.remove();
+  }
 
 })();
