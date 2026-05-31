@@ -16,5 +16,6 @@
   - [chat.deepseek.com](https://chat.deepseek.com)
   - [qianwen.com/chat](https://qianwen.com/chat)
   - [doubao.com/chat](https://doubao.com/chat)
+  - [chatgpt.com](https://chatgpt.com)
 
 ![千问](qianwen.png "阿里 AI 助手")

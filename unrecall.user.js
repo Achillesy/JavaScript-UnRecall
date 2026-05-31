@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         UnRecall – Chatbot NoTakebacks
 // @namespace    https://github.com/Achillesy/JavaScript-UnRecall
-// @version      1.7.0
+// @version      1.8.0
 // @description  Captures chatbot replies before content-filter erasure
 // @author       Achillesy
 // @match        https://chat.deepseek.com/*
 // @match        https://*.qianwen.com/*
 // @match        https://www.doubao.com/*
+// @match        https://chatgpt.com/*
 // @run-at       document-start
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js
@@ -38,9 +39,10 @@
   function pageWorld() {
     'use strict';
 
-    const ENDPOINT_RE = /(?:\/chat\/completions?\b|\/api\/v2\/chat\b)/i;
+    const ENDPOINT_RE = /(?:\/chat\/completions?\b|\/api\/v2\/chat\b|\/backend(?:-api|-anon)?\/conversation\b)/i;
     const QIANWEN_RE = /qianwen\.com/i;
     const DOUBAO_RE = /doubao\.com/i;
+    const CHATGPT_RE = /chatgpt\.com/i;
     const sessions = [];
     let ui = null;
 
@@ -338,9 +340,106 @@
       return { handlePacket, finish };
     }
 
+    // ── ChatGPT processor ───────────────────────────────────────────────────
+    // ChatGPT streams two kinds of SSE payloads:
+    //   • Typed events  (no "event:" line): { "type": "moderation"|"message_marker"|... }
+    //   • Delta patches (event: delta):     { "p": "/path", "o": "add|append|patch", "v": ... }
+    //     The "c" field marks a new message slot; packets without "c" continue the last slot.
+    // Censorship: a typed event {"type":"moderation","moderation_response":{"blocked":true}}
+    // arrives after the full answer is streamed, then [DONE] closes the stream.
+
+    function createChatGPTProcessor() {
+      let content = '';
+      let msgId = null;
+      let censored = false;
+      let done = false;
+      let lastAppendPath = null;
+
+      function handlePacket(pkt) {
+        if (!pkt || typeof pkt !== 'object' || Array.isArray(pkt)) return;
+
+        // Typed events
+        if (typeof pkt.type === 'string') {
+          if (pkt.type === 'moderation' &&
+              pkt.moderation_response && pkt.moderation_response.blocked) {
+            censored = true;
+          }
+          return;
+        }
+
+        // New message slot (has "c" field)
+        if (pkt.c !== undefined) {
+          const msg = pkt.v && pkt.v.message;
+          if (msg && msg.author && msg.author.role === 'assistant') {
+            const hidden = !!(msg.metadata && msg.metadata.is_visually_hidden_from_conversation);
+            if (!hidden) {
+              // Always overwrite with the latest visible assistant slot (search tool
+              // call appears first but is replaced by the final response slot)
+              msgId = msg.id;
+              content = '';
+              lastAppendPath = null;
+            }
+          }
+          return;
+        }
+
+        if (!msgId) return;
+
+        // Batch patch: { "p": "", "o": "patch", "v": [...sub-ops] }
+        if (pkt.o === 'patch' && Array.isArray(pkt.v)) {
+          lastAppendPath = null;
+          for (const sub of pkt.v) {
+            if (sub.p === '/message/content/parts/0' && sub.o === 'append') {
+              content += String(sub.v || '');
+              lastAppendPath = '/message/content/parts/0';
+            }
+          }
+          return;
+        }
+
+        // Direct append: { "p": "/message/content/parts/0", "o": "append", "v": "token" }
+        if (pkt.p === '/message/content/parts/0' && pkt.o === 'append') {
+          content += String(pkt.v || '');
+          lastAppendPath = pkt.p;
+          return;
+        }
+
+        // Continuation packet: { "v": "token" } or { "v": [...sub-ops] } — no p/o/c/type
+        if (pkt.p === undefined && pkt.o === undefined &&
+            pkt.c === undefined && pkt.type === undefined &&
+            pkt.v !== undefined) {
+          if (typeof pkt.v === 'string' && lastAppendPath) {
+            content += pkt.v;
+          } else if (Array.isArray(pkt.v)) {
+            for (const sub of pkt.v) {
+              if (sub.p === '/message/content/parts/0' && sub.o === 'append') {
+                content += String(sub.v || '');
+                lastAppendPath = '/message/content/parts/0';
+              }
+            }
+          }
+        }
+      }
+
+      function finish() {
+        if (done) return;
+        done = true;
+        if (!censored || !content) return;
+        sessions.push({
+          id: msgId || String(Date.now()),
+          fragments: [{ type: 'RESPONSE', content }],
+          time: Date.now(),
+        });
+        renderPanel();
+      }
+
+      return { handlePacket, finish };
+    }
+
     // ── SSE consumer ────────────────────────────────────────────────────────
 
     function pickProcessor(url) {
+      if (CHATGPT_RE.test(url)) return { proc: createChatGPTProcessor(), kind: 'chatgpt' };
       if (DOUBAO_RE.test(url))  return { proc: createDoubaoProcessor(),  kind: 'doubao'  };
       if (QIANWEN_RE.test(url)) return { proc: createQianwenProcessor(), kind: 'qianwen' };
       return { proc: createProcessor(), kind: 'deepseek' };
@@ -349,6 +448,12 @@
     // Dispatch one SSE `data:` line. Returns true if the stream is terminal
     // and the caller should stop reading.
     function dispatch(proc, kind, evt, data) {
+      if (kind === 'chatgpt') {
+        // [DONE] is the terminal line; moderation events precede it
+        if (data === '[DONE]') { proc.finish(); return true; }
+        try { proc.handlePacket(JSON.parse(data)); } catch { /* skip */ }
+        return false;
+      }
       if (kind === 'qianwen') {
         if (evt === 'close') { proc.finish(); return true; }
         if (evt === 'audit') {
