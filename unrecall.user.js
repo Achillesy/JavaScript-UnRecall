@@ -39,7 +39,7 @@
   function pageWorld() {
     'use strict';
 
-    const ENDPOINT_RE = /(?:\/chat\/completions?\b|\/api\/v2\/chat\b|\/backend(?:-api|-anon)?\/conversation\b)/i;
+    const ENDPOINT_RE = /(?:\/chat\/completions?\b|\/api\/v2\/chat\b|\/backend(?:-api|-anon)?\/(?:f\/)?conversation\b)/i;
     const QIANWEN_RE = /qianwen\.com/i;
     const DOUBAO_RE = /doubao\.com/i;
     const CHATGPT_RE = /chatgpt\.com/i;
