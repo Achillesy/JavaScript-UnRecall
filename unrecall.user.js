@@ -367,15 +367,16 @@
           return;
         }
 
-        // New message slot (has "c" field)
+        // New message slot — identified by "c" counter field.
+        // Accept either { v: { message }, c } or { p:"", o:"add", v:{ message }, c }.
         if (pkt.c !== undefined) {
-          const msg = pkt.v && pkt.v.message;
+          const msg = (pkt.v && pkt.v.message) || pkt.message;
           if (msg && msg.author && msg.author.role === 'assistant') {
             const hidden = !!(msg.metadata && msg.metadata.is_visually_hidden_from_conversation);
             if (!hidden) {
               // Always overwrite with the latest visible assistant slot (search tool
               // call appears first but is replaced by the final response slot)
-              msgId = msg.id;
+              msgId = msg.id || null;
               content = '';
               lastAppendPath = null;
             }
@@ -383,9 +384,9 @@
           return;
         }
 
-        if (!msgId) return;
-
         // Batch patch: { "p": "", "o": "patch", "v": [...sub-ops] }
+        // Accept content appends even before a slot is identified — the slot
+        // assignment (c field) may arrive in a different packet ordering.
         if (pkt.o === 'patch' && Array.isArray(pkt.v)) {
           lastAppendPath = null;
           for (const sub of pkt.v) {
