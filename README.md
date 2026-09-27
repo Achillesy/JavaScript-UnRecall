@@ -11,7 +11,8 @@
 ## Install
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) for your browser.
-2. Click → **[Install UnRecall](https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js)**
+2. Click → **[Install UnRecall from Greasy Fork](https://greasyfork.org/zh-CN/scripts/597709-unrecall-chatbot-notakebacks)** (recommended — automatic updates)
+   - Alternative: [install directly from GitHub](https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js)
 3. Confirm in the Tampermonkey dialog and visit
   - [chat.deepseek.com](https://chat.deepseek.com)
   - [qianwen.com/chat](https://qianwen.com/chat)
