@@ -4,6 +4,7 @@
 // @version      1.8.0
 // @description  Captures chatbot replies before content-filter erasure
 // @author       Achillesy
+// @license      MIT
 // @match        https://chat.deepseek.com/*
 // @match        https://*.qianwen.com/*
 // @match        https://www.doubao.com/*
