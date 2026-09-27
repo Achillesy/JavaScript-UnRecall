@@ -9,7 +9,9 @@
 // @match        https://www.doubao.com/*
 // @match        https://chatgpt.com/*
 // @run-at       document-start
-// @grant        none
+// @grant        GM_registerMenuCommand
+// @grant        GM_openInTab
+// @supportURL   https://ko-fi.com/achillesy
 // @updateURL    https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js
 // @downloadURL  https://raw.githubusercontent.com/Achillesy/JavaScript-UnRecall/master/unrecall.user.js
 // @homepageURL  https://github.com/Achillesy/JavaScript-UnRecall
@@ -35,6 +37,15 @@
 
 (function () {
   'use strict';
+
+  // Tampermonkey menu: tip the author (mirrors the donate button in FocusQuota)
+  try {
+    if (typeof GM_registerMenuCommand === 'function') {
+      GM_registerMenuCommand('☕ 请作者喝杯咖啡 / Buy me a coffee', function () {
+        GM_openInTab('https://ko-fi.com/achillesy', { active: true });
+      });
+    }
+  } catch (e) { /* menu not available — non-fatal */ }
 
   function pageWorld() {
     'use strict';

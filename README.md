@@ -19,3 +19,18 @@
   - [chatgpt.com](https://chatgpt.com)
 
 ![千问](qianwen.png "阿里 AI 助手")
+
+## Support
+
+UnRecall is free, and always will be. If it saved you from curiosity unfulfilled, consider buying me a coffee:
+
+- ☕ [Ko-fi](https://ko-fi.com/achillesy) (international, via PayPal)
+- 💸 [PayPal](https://paypal.me/achillesnewman)
+
+Users in China can also scan:
+
+| 微信 | 支付宝 |
+| --- | --- |
+| <img src="sponsor/wechat.jpg?v=4" width="200"> | <img src="sponsor/alipay.jpg?v=6" width="200"> |
+
+Support is fully voluntary and doesn't affect any features.
